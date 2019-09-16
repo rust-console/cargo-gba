@@ -1,6 +1,6 @@
 [package]
 name = "cargo-gba"
-version = "0.0.1"
+version = "0.0.2"
 authors = ["Lokathor <zefria@gmail.com>"]
 edition = "2018"
 description = "A cargo plugin to help ease the process of GBA game creation."
