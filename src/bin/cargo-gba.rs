@@ -32,11 +32,15 @@ pub fn main() {
   } else {
     create_dir("target").ok();
     gba_assemble().unwrap_or_else(|msg| {
-      eprintln!("{}", msg);
+      use std::io::Write;
+      std::io::stdout().flush().ok();
+      eprintln!("\nError during Assembling stage: {}", msg);
       exit(1);
     });
     gba_link().unwrap_or_else(|msg| {
-      eprintln!("{}", msg);
+      use std::io::Write;
+      std::io::stdout().flush().ok();
+      eprintln!("\nError during Linking stage: {}", msg);
       exit(1);
     });
   }
@@ -93,13 +97,13 @@ fn gba_link() -> Result<(), String> {
   ld_cmd.arg("gba_link_script.ld");
   ld_cmd.arg("--output");
   let canonical_pwd = Path::new(".").canonicalize().unwrap();
-  let project_name = Path::new(canonical_pwd.components().last().unwrap().as_os_str());
+  let project_name = Path::new(canonical_pwd.file_name().unwrap());
   let elf = Path::new("target").join(format!("{}.elf", project_name.display()));
   print!("> {}:", elf.display());
   ld_cmd.arg(format!("{}", elf.display()));
   let file_paths = grab_file_paths_by_extension("target", "o", false);
   for file_path in file_paths {
-    print!(" {}", file_path.display());
+    print!(" {}", Path::new(file_path.file_name().unwrap()).display());
     ld_cmd.arg(format!("{}", file_path.display()));
   }
   match ld_cmd.output() {
