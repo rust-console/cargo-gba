@@ -46,11 +46,22 @@ pub fn main() {
   }
 }
 
+fn is_asm_file(pbr: &PathBuf) -> bool {
+  pbr.is_file() && pbr.extension().and_then(OsStr::to_str) == Some("s")
+}
+
+fn is_object_file(pbr: &PathBuf) -> bool {
+  pbr.is_file() && pbr.extension().and_then(OsStr::to_str) == Some("o")
+}
+
 fn gba_assemble() -> Result<(), String> {
   println!("Assembling...");
   let include_is_dir = Path::new("include").is_dir();
-  let file_paths = grab_file_paths_by_extension("src", "s", true);
-  for file_path in file_paths {
+  let iter_chain = ReadDirSkipErrors::new("src")
+    .filter(is_asm_file)
+    .chain(ReadDirSkipErrors::new("src/bin").filter(is_asm_file))
+    .chain(ReadDirSkipErrors::new("examples").filter(is_asm_file));
+  for file_path in iter_chain {
     println!("> {}", file_path.display());
     let mut as_cmd = Command::new("arm-none-eabi-as");
     as_cmd.arg("-mcpu=arm7tdmi");
@@ -101,8 +112,7 @@ fn gba_link() -> Result<(), String> {
   let elf = Path::new("target").join(format!("{}.elf", project_name.display()));
   print!("> {}:", elf.display());
   ld_cmd.arg(format!("{}", elf.display()));
-  let file_paths = grab_file_paths_by_extension("target", "o", false);
-  for file_path in file_paths {
+  for file_path in ReadDirSkipErrors::new("target").filter(is_object_file) {
     print!(" {}", Path::new(file_path.file_name().unwrap()).display());
     ld_cmd.arg(format!("{}", file_path.display()));
   }
@@ -122,28 +132,50 @@ fn gba_link() -> Result<(), String> {
   Ok(())
 }
 
-fn grab_file_paths_by_extension<P: AsRef<Path>>(
-  dir: P,
-  ext: &str,
-  recursive: bool,
-) -> Vec<PathBuf> {
-  let mut output = Vec::new();
-  if dir.as_ref().is_dir() {
-    if let Ok(read_dir) = read_dir(dir) {
-      for dir_entry_result in read_dir {
-        if let Ok(dir_entry) = dir_entry_result {
-          let path_buf = dir_entry.path();
-          if recursive && path_buf.is_dir() {
-            output.extend(grab_file_paths_by_extension(path_buf, ext, true));
-          } else if path_buf.is_file() && path_buf.extension().and_then(OsStr::to_str) == Some(ext)
-          {
-            output.push(path_buf);
+struct ReadDirSkipErrors {
+  opt_rd: Option<std::fs::ReadDir>,
+}
+impl ReadDirSkipErrors {
+  pub fn new<P: AsRef<Path>>(base_dir: P) -> Self {
+    if base_dir.as_ref().is_dir() {
+      match std::fs::read_dir(base_dir) {
+        Ok(rd) => Self { opt_rd: Some(rd) },
+        Err(_) => Self { opt_rd: None },
+      }
+    } else {
+      Self { opt_rd: None }
+    }
+  }
+}
+impl core::iter::Iterator for ReadDirSkipErrors {
+  type Item = PathBuf;
+  fn next(&mut self) -> Option<PathBuf> {
+    match self.opt_rd {
+      None => None,
+      Some(ref mut rd) => {
+        loop {
+          match rd.next() {
+            Some(dir_entry_result) => {
+              match dir_entry_result {
+                Ok(dir_entry) => {
+                  return Some(dir_entry.path());
+                }
+                Err(_) => {
+                  // we don't care what the error was, just keep going.
+                  continue;
+                }
+              }
+            }
+            None => {
+              // our reader is exhausted
+              self.opt_rd = None;
+              return None;
+            }
           }
         }
       }
     }
   }
-  output
 }
 
 fn get_version_string() -> String {
