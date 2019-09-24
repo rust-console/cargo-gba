@@ -8,10 +8,56 @@ use std::{
   io::ErrorKind,
   iter::Extend,
   path::{Path, PathBuf},
-  process::{exit, Command},
+  process::exit,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Debug, Clone)]
+struct EZCommand {
+  pub program: OsString,
+  pub args: Vec<OsString>,
+}
+impl EZCommand {
+  pub fn new<S: AsRef<OsStr>>(program: S) -> Self {
+    Self {
+      program: program.as_ref().to_os_string(),
+      args: Vec::new(),
+    }
+  }
+
+  pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) {
+    self.args.push(arg.as_ref().to_os_string());
+  }
+
+  pub fn output_result(self) -> Result<Result<EZOutput, EZOutput>, std::io::Error> {
+    let mut cmd = std::process::Command::new(&self.program);
+    for arg in self.args.iter() {
+      cmd.arg(arg);
+    }
+    cmd.output().map(|output| {
+      if output.status.success() {
+        Ok(EZOutput::from(output))
+      } else {
+        Err(EZOutput::from(output))
+      }
+    })
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct EZOutput {
+  stdout: String,
+  stderr: String,
+}
+impl From<std::process::Output> for EZOutput {
+  fn from(value: std::process::Output) -> Self {
+    Self {
+      stdout: String::from_utf8_lossy(&value.stdout).into_owned(),
+      stderr: String::from_utf8_lossy(&value.stderr).into_owned(),
+    }
+  }
+}
 
 pub fn main() {
   let mut args: Vec<_> = args_os().skip(1).map(OsString::into_string).collect();
@@ -56,23 +102,24 @@ fn is_object_file(pbr: &PathBuf) -> bool {
 
 fn gba_assemble() -> Result<(), String> {
   println!("Assembling...");
-  let include_is_dir = Path::new("include").is_dir();
+  let mut base_command = EZCommand::new("arm-none-eabi-as");
+  base_command.arg("-mcpu=arm7tdmi");
+  base_command.arg("-mthumb-interwork");
+  base_command.arg("-I");
+  base_command.arg("src");
+  if Path::new("include").is_dir() {
+    base_command.arg("-I");
+    base_command.arg("include");
+  }
+  base_command.arg("-o");
+  //
   let iter_chain = ReadDirSkipErrors::new("src")
     .filter(is_asm_file)
     .chain(ReadDirSkipErrors::new("src/bin").filter(is_asm_file))
     .chain(ReadDirSkipErrors::new("examples").filter(is_asm_file));
   for file_path in iter_chain {
     println!("> {}", file_path.display());
-    let mut as_cmd = Command::new("arm-none-eabi-as");
-    as_cmd.arg("-mcpu=arm7tdmi");
-    as_cmd.arg("-mthumb-interwork");
-    as_cmd.arg("-I");
-    as_cmd.arg("src");
-    if include_is_dir {
-      as_cmd.arg("-I");
-      as_cmd.arg("include");
-    }
-    as_cmd.arg("-o");
+    let mut this_command = base_command.clone();
     let out_file = {
       // TODO: maybe use
       // https://doc.rust-lang.org/std/path/struct.PathBuf.html#method.strip_prefix
@@ -81,21 +128,15 @@ fn gba_assemble() -> Result<(), String> {
       out.set_extension("o");
       out
     };
-    as_cmd.arg(format!("{}", out_file.display()));
-    as_cmd.arg(file_path);
+    this_command.arg(format!("{}", out_file.display()));
+    this_command.arg(file_path);
     //
-    match as_cmd.output() {
-      Ok(output) => {
-        if output.status.success() {
-          // nothing to do right now
-        } else {
-          return Err(format!(
-            "Assembly failed! {}",
-            String::from_utf8_lossy(&output.stderr)
-          ));
-        }
-      }
-      Err(err) => println!("ERROR: could not execute assembler. {}", err),
+    match this_command
+      .output_result()
+      .expect("Couldn't execute the assembler!")
+    {
+      Ok(_) => (),
+      Err(ez_out) => println!("Assembler reported error:{}", ez_out.stderr),
     }
   }
   Ok(())
@@ -103,31 +144,32 @@ fn gba_assemble() -> Result<(), String> {
 
 fn gba_link() -> Result<(), String> {
   println!("Linking...");
-  let mut ld_cmd = Command::new("arm-none-eabi-ld");
-  ld_cmd.arg("--script");
-  ld_cmd.arg("gba_link_script.ld");
-  ld_cmd.arg("--output");
-  let canonical_pwd = Path::new(".").canonicalize().unwrap();
-  let project_name = Path::new(canonical_pwd.file_name().unwrap());
-  let elf = Path::new("target").join(format!("{}.elf", project_name.display()));
-  print!("> {}:", elf.display());
-  ld_cmd.arg(format!("{}", elf.display()));
-  for file_path in ReadDirSkipErrors::new("target").filter(is_object_file) {
-    print!(" {}", Path::new(file_path.file_name().unwrap()).display());
-    ld_cmd.arg(format!("{}", file_path.display()));
-  }
-  match ld_cmd.output() {
-    Ok(output) => {
-      if output.status.success() {
-        // nothing to do right now
-      } else {
-        return Err(format!(
-          "Linking failed! {}",
-          String::from_utf8_lossy(&output.stderr)
-        ));
-      }
+  let mut base_command = EZCommand::new("arm-none-eabi-ld");
+  base_command.arg("--script");
+  base_command.arg("gba_link_script.ld");
+  base_command.arg("--output");
+  for binary_build in ReadDirSkipErrors::new("src/bin")
+    .filter(is_asm_file)
+    .chain(ReadDirSkipErrors::new("examples").filter(is_asm_file))
+  {
+    let mut this_command = base_command.clone();
+    let elf = Path::new("target").join(format!(
+      "{}.elf",
+      Path::new(binary_build.file_name().unwrap()).display()
+    ));
+    print!("> {}:", elf.display());
+    this_command.arg(format!("{}", elf.display()));
+    for file_path in ReadDirSkipErrors::new("target").filter(is_object_file) {
+      print!(" {}", Path::new(file_path.file_name().unwrap()).display());
+      this_command.arg(format!("{}", file_path.display()));
     }
-    Err(err) => println!("ERROR: could not execute linker. {}", err),
+    match this_command
+      .output_result()
+      .expect("Couldn't execute the linker!")
+    {
+      Ok(_) => (),
+      Err(ez_output) => println!("Linker reported error: {}", ez_output.stderr),
+    }
   }
   Ok(())
 }
@@ -181,29 +223,25 @@ impl core::iter::Iterator for ReadDirSkipErrors {
 fn get_version_string() -> String {
   // Note: all of the binutils in a given install should be the same version, so
   // we just call the assembler, because I guess it's alphabetical that way.
-  let binutils_version = Command::new("arm-none-eabi-as")
-    .arg("--version")
-    .output()
-    .ok()
-    .and_then(|output| {
-      if output.status.success() {
-        String::from_utf8_lossy(&output.stdout)
-          .lines()
-          .next()
-          .and_then(|line| line.split_whitespace().last())
-          .map(|v| v.to_string())
-      } else {
-        None
-      }
-    })
-    .unwrap_or_else(|| "version could not be detected".to_string());
+  let mut cmd = EZCommand::new("arm-none-eabi-as");
+  cmd.arg("--version");
+  let version_string: String = match cmd.output_result() {
+    Ok(Ok(ez_output)) => ez_output
+      .stdout
+      .lines()
+      .next()
+      .and_then(|line| line.split_whitespace().last())
+      .map(|v| v.to_string())
+      .unwrap_or_else(|| "version could not be detected".to_string()),
+    _ => "version could not be detected".to_string(),
+  };
 
-  format!("cargo-gba {} (binutils {})", VERSION, binutils_version)
+  format!("cargo-gba {} (binutils {})", VERSION, version_string)
 }
 
 fn print_help_and_exit() -> ! {
   println!("Just call the program with no args and it will assemble/link.");
-  println!("* All foo.s files in src/ or subdirs are assembled into foo.o in target/");
-  println!("* All foo.o files in target/ are linked into PROJECT.elf");
+  println!("* All `foo.s` files in `src/`, `src/bin/`, and `examples/` are assembled (into the `target/` dir)");
+  println!("* The `foo.o` files from `src/bin/` and `examples/` are each linked into `foo.elf`");
   exit(0)
 }
