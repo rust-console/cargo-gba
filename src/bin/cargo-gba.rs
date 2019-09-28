@@ -96,10 +96,6 @@ fn is_asm_file(pbr: &PathBuf) -> bool {
   pbr.is_file() && pbr.extension().and_then(OsStr::to_str) == Some("s")
 }
 
-fn is_object_file(pbr: &PathBuf) -> bool {
-  pbr.is_file() && pbr.extension().and_then(OsStr::to_str) == Some("o")
-}
-
 fn gba_assemble() -> Result<(), String> {
   println!("Assembling...");
   let mut base_command = EZCommand::new("arm-none-eabi-as");
@@ -144,24 +140,33 @@ fn gba_assemble() -> Result<(), String> {
 
 fn gba_link() -> Result<(), String> {
   println!("Linking...");
+  let mut lib_files = vec![];
+  for lib_file in ReadDirSkipErrors::new("src").filter(is_asm_file) {
+    let mut lib_name = Path::new("target").join(lib_file.file_stem().unwrap());
+    lib_name.set_extension("o");
+    lib_files.push(lib_name);
+  }
   let mut base_command = EZCommand::new("arm-none-eabi-ld");
   base_command.arg("--script");
   base_command.arg("gba_link_script.ld");
   base_command.arg("--output");
-  for binary_build in ReadDirSkipErrors::new("src/bin")
+  for game in ReadDirSkipErrors::new("src/bin")
+    .chain(ReadDirSkipErrors::new("examples"))
     .filter(is_asm_file)
-    .chain(ReadDirSkipErrors::new("examples").filter(is_asm_file))
+    .map(|path|path.file_stem().unwrap().to_os_string())
   {
+    let target_dir = Path::new("target");
+    let mut o = target_dir.join(&game);
+    o.set_extension("o");
+    let mut elf = target_dir.join(&game);
+    elf.set_extension("elf");
+    println!("> {}", elf.display());
+    //
     let mut this_command = base_command.clone();
-    let elf = Path::new("target").join(format!(
-      "{}.elf",
-      Path::new(binary_build.file_name().unwrap()).display()
-    ));
-    print!("> {}:", elf.display());
     this_command.arg(format!("{}", elf.display()));
-    for file_path in ReadDirSkipErrors::new("target").filter(is_object_file) {
-      print!(" {}", Path::new(file_path.file_name().unwrap()).display());
-      this_command.arg(format!("{}", file_path.display()));
+    this_command.arg(format!("{}", o.display()));
+    for lib in lib_files.iter() {
+      this_command.arg(format!("{}", lib.display()));
     }
     match this_command
       .output_result()
