@@ -97,7 +97,7 @@ fn is_asm_file(pbr: &PathBuf) -> bool {
 }
 
 fn gba_assemble() -> Result<(), String> {
-  println!("Assembling...");
+  print!("as: ");
   let mut base_command = EZCommand::new("arm-none-eabi-as");
   base_command.arg("-mcpu=arm7tdmi");
   base_command.arg("-mthumb-interwork");
@@ -114,7 +114,7 @@ fn gba_assemble() -> Result<(), String> {
     .chain(ReadDirSkipErrors::new("src/bin").filter(is_asm_file))
     .chain(ReadDirSkipErrors::new("examples").filter(is_asm_file));
   for file_path in iter_chain {
-    println!("> {}", file_path.display());
+    print!("{}, ", Path::new(file_path.file_stem().unwrap()).display());
     let mut this_command = base_command.clone();
     let out_file = {
       // TODO: maybe use
@@ -127,19 +127,17 @@ fn gba_assemble() -> Result<(), String> {
     this_command.arg(format!("{}", out_file.display()));
     this_command.arg(file_path);
     //
-    match this_command
+    this_command
       .output_result()
       .expect("Couldn't execute the assembler!")
-    {
-      Ok(_) => (),
-      Err(ez_out) => println!("Assembler reported error:{}", ez_out.stderr),
-    }
+      .map_err(|ez_out| ez_out.stderr)?;
   }
+  println!();
   Ok(())
 }
 
 fn gba_link() -> Result<(), String> {
-  println!("Linking...");
+  print!("ld: ");
   let mut lib_files = vec![];
   for lib_file in ReadDirSkipErrors::new("src").filter(is_asm_file) {
     let mut lib_name = Path::new("target").join(lib_file.file_stem().unwrap());
@@ -160,7 +158,7 @@ fn gba_link() -> Result<(), String> {
     o.set_extension("o");
     let mut elf = target_dir.join(&game);
     elf.set_extension("elf");
-    println!("> {}", elf.display());
+    print!("{}, ", Path::new(&game).display());
     //
     let mut this_command = base_command.clone();
     this_command.arg(format!("{}", elf.display()));
