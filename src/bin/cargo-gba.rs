@@ -174,6 +174,7 @@ fn gba_link() -> Result<(), String> {
       Err(ez_output) => println!("Linker reported error: {}", ez_output.stderr),
     }
   }
+  println!();
   Ok(())
 }
 
